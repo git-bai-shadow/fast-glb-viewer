@@ -3,14 +3,12 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GLB 极速查看器 (修复版)</title>
+    <title>GLB 查看器 (代理版)</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #1a1a1a; color: #fff; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
-        #info { position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); padding: 10px; border-radius: 4px; pointer-events: none; z-index: 100; }
-        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); font-size: 1.2rem; }
+        body { margin: 0; overflow: hidden; background-color: #111; color: #fff; font-family: sans-serif; }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
     </style>
-
-    <!-- 使用 esm.sh 导入 Three.js，这是一个非常稳定的 CDN，自动处理依赖 -->
+    <!-- 依然使用 esm.sh，稳定且快 -->
     <script type="importmap">
         {
             "imports": {
@@ -21,106 +19,89 @@
     </script>
 </head>
 <body>
-    <div id="info">GLB 查看器 (修复版)</div>
-    <div id="loading">加载中...</div>
+    <div id="loading">模型加载中... (若卡住请检查控制台)</div>
 
     <script type="module">
         import * as THREE from 'three';
         import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
         import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
-        import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
-        // 1. 获取 URL 参数
-        const urlParams = new URLSearchParams(window.location.search);
-        const modelUrl = urlParams.get('url');
+        const loadingDiv = document.getElementById('loading');
 
-        if (!modelUrl) {
-            document.getElementById('loading').innerText = "错误：请在 URL 后添加 ?url=模型地址";
-            throw new Error("Missing URL parameter");
-        }
-
-        // 2. 初始化场景
+        // 1. 基础场景设置
         const scene = new THREE.Scene();
-        // 添加一点环境雾，让模型边缘融合得更好
-        scene.fog = new THREE.FogExp2(0x1a1a1a, 0.02);
+        scene.background = new THREE.Color(0x222222);
 
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(3, 2, 3);
+        camera.position.set(2, 2, 2);
 
-        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         renderer.setPixelRatio(window.devicePixelRatio);
-        renderer.toneMapping = THREE.ACESFilmicToneMapping;
-        renderer.toneMappingExposure = 1.0;
-        renderer.outputColorSpace = THREE.SRGBColorSpace;
         document.body.appendChild(renderer.domElement);
 
-        // 3. 控制器
-        const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true; // 惯性阻尼
-        controls.dampingFactor = 0.05;
-
-        // 4. 灯光 (使用 HDRI 环境光效果更好，这里为了简单先用基础光)
-        const ambientLight = new THREE.AmbientLight(0xffffff, 1.0);
+        // 灯光
+        const ambientLight = new THREE.AmbientLight(0xffffff, 1);
         scene.add(ambientLight);
-
-        const dirLight = new THREE.DirectionalLight(0xffffff, 2.0);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 2);
         dirLight.position.set(5, 5, 5);
         scene.add(dirLight);
 
-        // 添加地面网格辅助（可选，如果不想要可以注释掉）
-        const gridHelper = new THREE.GridHelper(10, 10, 0x444444, 0x222222);
-        scene.add(gridHelper);
+        // 控制器
+        const controls = new OrbitControls(camera, renderer.domElement);
+        controls.enableDamping = true;
 
-        // 5. 加载模型的核心逻辑 (解决跨域的关键)
+        // 2. 核心逻辑：处理 URL 和 代理
+        const urlParams = new URLSearchParams(window.location.search);
+        let modelUrl = urlParams.get('url');
+
+        if (!modelUrl) {
+            loadingDiv.innerHTML = "错误：请在 URL 后加上 ?url=模型地址";
+            throw new Error("Missing URL");
+        }
+
+        // 【关键修改】这里构造代理地址
+        // 如果模型地址包含 assets.meshy.ai，我们强制走本地代理
+        // 否则直接加载（给其他网站留条活路）
+        let finalUrl = modelUrl;
+
+        if (modelUrl.includes('assets.meshy.ai')) {
+             // 获取当前网站的域名作为代理前缀
+             const proxyPrefix = window.location.origin + '/api/proxy?url=';
+             finalUrl = proxyPrefix + encodeURIComponent(modelUrl);
+             console.log('检测到 Meshy 链接，已自动切换到代理模式:', finalUrl);
+        }
+
+        // 3. 加载模型
         const loader = new GLTFLoader();
-        const loadingText = document.getElementById('loading');
-
-        // 尝试直接加载
-        // 如果直接加载报 CORS 错，现代浏览器在某些配置下会自动 fallback，
-        // 或者你可以尝试在 URL 前加一个 CORS 代理前缀（如 corsproxy.io/?），但这不稳定。
-        // 这里我们直接用标准方式尝试。
 
         loader.load(
-            modelUrl,
-            function (gltf) {
-                // 成功加载
-                const model = gltf.scene;
+            finalUrl,
+            (gltf) => {
+                scene.add(gltf.scene);
 
-                // 自动调整模型大小和位置
-                const box = new THREE.Box3().setFromObject(model);
+                // 自动居中与缩放
+                const box = new THREE.Box3().setFromObject(gltf.scene);
                 const center = box.getCenter(new THREE.Vector3());
                 const size = box.getSize(new THREE.Vector3());
-
                 const maxDim = Math.max(size.x, size.y, size.z);
-                const scale = 2 / maxDim; // 缩放到合适大小
-                model.scale.set(scale, scale, scale);
 
-                // 重新居中
-                model.position.sub(center.multiplyScalar(scale));
-                model.position.y -= box.min.y * scale; // 让模型底部接触地面
+                gltf.scene.position.sub(center); // 居中
+                const scale = 2 / maxDim;
+                gltf.scene.scale.set(scale, scale, scale);
 
-                scene.add(model);
-                loadingText.style.display = 'none';
-
-                // 调整相机位置以适应模型
-                controls.target.copy(new THREE.Vector3(0, 0, 0));
-                camera.position.set(maxDim * 2, maxDim, maxDim * 2);
-                controls.update();
-
+                loadingDiv.style.display = 'none';
             },
-            function (xhr) {
-                // 加载进度
-                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
+            (xhr) => {
+                loadingDiv.innerHTML = `加载中: ${(xhr.loaded / xhr.total * 100).toFixed(0)}%`;
             },
-            function (error) {
-                // 错误处理
+            (error) => {
                 console.error('加载失败', error);
-                loadingText.innerHTML = `加载失败<br>可能是跨域限制 (CORS)<br>请尝试使用支持 CORS 的链接`;
+                loadingDiv.innerHTML = "加载失败！<br>可能是跨域限制无法绕过，或链接已过期。<br>请查看控制台详情。";
             }
         );
 
-        // 6. 渲染循环
+        // 循环渲染
         function animate() {
             requestAnimationFrame(animate);
             controls.update();
@@ -128,13 +109,12 @@
         }
         animate();
 
-        // 7. 窗口自适应
-        window.addEventListener('resize', onWindowResize, false);
-        function onWindowResize() {
+        // 窗口自适应
+        window.addEventListener('resize', () => {
             camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
-        }
+        });
     </script>
 </body>
 </html>
