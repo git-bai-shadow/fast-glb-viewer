@@ -3,41 +3,44 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>GLB 查看器 (代理版)</title>
+    <title>GLB 模型查看器 (代理修复版)</title>
     <style>
-        body { margin: 0; overflow: hidden; background-color: #111; color: #fff; font-family: sans-serif; }
-        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); }
+        body { margin: 0; overflow: hidden; background-color: #111; color: #888; font-family: sans-serif; }
+        #info { position: absolute; top: 10px; width: 100%; text-align: center; z-index: 100; pointer-events: none; }
+        #loading { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); color: #fff; }
     </style>
-    <!-- 依然使用 esm.sh，稳定且快 -->
-    <script type="importmap">
-        {
-            "imports": {
-                "three": "https://esm.sh/three@0.160.0",
-                "three/addons/": "https://esm.sh/three@0.160.0/examples/jsm/"
-            }
-        }
-    </script>
 </head>
 <body>
-    <div id="loading">模型加载中... (若卡住请检查控制台)</div>
+    <div id="info">GLB 查看器 (Proxy Mode)</div>
+    <div id="loading">加载中...</div>
 
     <script type="module">
-        import * as THREE from 'three';
-        import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-        import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+        import * as THREE from 'https://esm.sh/three@0.160.0';
+        import { OrbitControls } from 'https://esm.sh/three@0.160.0/examples/jsm/controls/OrbitControls.js';
+        import { GLTFLoader } from 'https://esm.sh/three@0.160.0/examples/jsm/loaders/GLTFLoader.js';
 
-        const loadingDiv = document.getElementById('loading');
+        // 1. 获取 URL 参数
+        const urlParams = new URLSearchParams(window.location.search);
+        let modelUrl = urlParams.get('url');
 
-        // 1. 基础场景设置
+        // 默认模型（如果没有传参）
+        if (!modelUrl) {
+            modelUrl = 'https://raw.githubusercontent.com/KhronosGroup/glTF-Sample-Models/master/2.0/Duck/glTF/Duck.gltf';
+        }
+
+        // 2. 【核心逻辑】如果链接是外部的，强制走 Vercel 代理
+        // 这里的逻辑是：如果链接包含 http 且不是你自己域名的，就套一层 /api/proxy
+        if (modelUrl.startsWith('http') && !modelUrl.includes(window.location.hostname)) {
+            // 必须使用 encodeURIComponent，否则链接里的 & 符号会把参数截断
+            modelUrl = '/api/proxy?url=' + encodeURIComponent(modelUrl);
+            console.log('👉 检测到跨域，已启用代理:', modelUrl);
+        }
+
+        // 3. 初始化 Three.js 场景
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x222222);
-
         const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
-        camera.position.set(2, 2, 2);
-
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
-        renderer.setPixelRatio(window.devicePixelRatio);
         document.body.appendChild(renderer.domElement);
 
         // 灯光
@@ -49,62 +52,43 @@
 
         // 控制器
         const controls = new OrbitControls(camera, renderer.domElement);
-        controls.enableDamping = true;
 
-        // 2. 核心逻辑：处理 URL 和 代理
-        const urlParams = new URLSearchParams(window.location.search);
-        let modelUrl = urlParams.get('url');
-
-        if (!modelUrl) {
-            loadingDiv.innerHTML = "错误：请在 URL 后加上 ?url=模型地址";
-            throw new Error("Missing URL");
-        }
-
-        // 【关键修改】这里构造代理地址
-        // 如果模型地址包含 assets.meshy.ai，我们强制走本地代理
-        // 否则直接加载（给其他网站留条活路）
-        let finalUrl = modelUrl;
-
-        if (modelUrl.includes('assets.meshy.ai')) {
-             // 获取当前网站的域名作为代理前缀
-             const proxyPrefix = window.location.origin + '/api/proxy?url=';
-             finalUrl = proxyPrefix + encodeURIComponent(modelUrl);
-             console.log('检测到 Meshy 链接，已自动切换到代理模式:', finalUrl);
-        }
-
-        // 3. 加载模型
+        // 加载模型
         const loader = new GLTFLoader();
+        const loadingElem = document.getElementById('loading');
 
         loader.load(
-            finalUrl,
-            (gltf) => {
+            modelUrl,
+            function (gltf) {
+                loadingElem.style.display = 'none';
                 scene.add(gltf.scene);
 
-                // 自动居中与缩放
+                // 自动适配模型大小和位置
                 const box = new THREE.Box3().setFromObject(gltf.scene);
                 const center = box.getCenter(new THREE.Vector3());
                 const size = box.getSize(new THREE.Vector3());
                 const maxDim = Math.max(size.x, size.y, size.z);
 
-                gltf.scene.position.sub(center); // 居中
-                const scale = 2 / maxDim;
-                gltf.scene.scale.set(scale, scale, scale);
+                camera.position.set(center.x, center.y, center.z + maxDim * 1.5);
+                controls.target.copy(center);
+                controls.update();
 
-                loadingDiv.style.display = 'none';
             },
-            (xhr) => {
-                loadingDiv.innerHTML = `加载中: ${(xhr.loaded / xhr.total * 100).toFixed(0)}%`;
+            function (xhr) {
+                // 加载进度
+                console.log((xhr.loaded / xhr.total * 100) + '% loaded');
             },
-            (error) => {
-                console.error('加载失败', error);
-                loadingDiv.innerHTML = "加载失败！<br>可能是跨域限制无法绕过，或链接已过期。<br>请查看控制台详情。";
+            function (error) {
+                // 【报错处理】
+                loadingElem.innerText = '加载失败！';
+                console.error(error);
+                alert('加载失败: ' + error.message + '\n请检查控制台网络面板');
             }
         );
 
-        // 循环渲染
+        // 渲染循环
         function animate() {
             requestAnimationFrame(animate);
-            controls.update();
             renderer.render(scene, camera);
         }
         animate();
